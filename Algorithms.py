@@ -2,8 +2,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-import xgboost as xgb
 from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.metrics import accuracy_score, classification_report
 
 warnings.filterwarnings('ignore')
 
@@ -19,13 +20,16 @@ print(df.head())
 if df['BasePolicy'].dtype == 'object':
     df['BasePolicy'] = pd.factorize(df['BasePolicy'])[0]  # Convert categorical to numeric
 
+# Replace 'no change' with 0 and any other value with 1 in the 'AddressChange_Claim' column
+df['AddressChange_Claim'] = df['AddressChange_Claim'].map(lambda x: 0 if x == 'no change' else 1)
+
 # Define X and y
 X = df.drop('BasePolicy', axis=1)  
 y = df['BasePolicy']
 
 # Convert labels into binary values
-y[y == 2] = 0  # Replace all 2s with 0
-y[y == 1] = 1  # Keep 1s as 1
+y[y == 2] = 0  
+y[y == 1] = 1  
 
 # Preview the y labels
 print(y.head())
@@ -33,40 +37,42 @@ print(y.head())
 # Convert all X columns to numeric (if necessary)
 X = X.apply(pd.to_numeric, errors='coerce')
 
-# Define data_dmatrix for XGBoost
-data_dmatrix = xgb.DMatrix(data=X, label=y)
+# Split X and y into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
 
-# Check the shape of the data_dmatrix
-print(data_dmatrix)
+# Define the parameter grid to search for hyperparameters
+param_grid = {
+    'learning_rate': [0.01, 0.05, 0.1],
+    'max_depth': [3, 4, 5],
+    'n_estimators': [100, 200],
+    'subsample': [0.8, 0.9, 1.0],
+    'colsample_bytree': [0.8, 0.9, 1.0],
+    'min_child_weight': [1, 5, 10],
+}
 
-# split X and y into training and testing sets
+# Initialize the XGBoost model
+xgb_clf = XGBClassifier(objective='binary:logistic', scale_pos_weight=1)
 
-from sklearn.model_selection import train_test_split
+# Set up k-fold cross-validation (StratifiedKFold ensures the class distribution is preserved)
+kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.3, random_state = 0)
+# Set up GridSearchCV with k-fold cross-validation
+grid_search = GridSearchCV(estimator=xgb_clf, param_grid=param_grid, cv=kfold, 
+                           scoring='accuracy', n_jobs=-1, verbose=1)
 
-# declare parameters
-params = {
-            'objective':'binary:logistic',
-            'max_depth': 4,
-            'alpha': 10,
-            'learning_rate': 1.0,
-            'n_estimators':100
-        }
-# instantiate the classifier 
-xgb_clf = XGBClassifier(**params)
+# Perform grid search with cross-validation
+grid_search.fit(X_train, y_train)
 
+# Print the best parameters and best score from the grid search
+print(f"Best parameters found: {grid_search.best_params_}")
+print(f"Best cross-validation accuracy score: {grid_search.best_score_}")
 
+# Retrieve the best model from grid search
+best_model = grid_search.best_estimator_
 
-# fit the classifier to the training data
-xgb_clf.fit(X_train, y_train)
-# alternatively view the parameters of the xgb trained model
-print(xgb_clf)
+# Make predictions with the best model on the test set
+y_pred = best_model.predict(X_test)
 
-# make predictions on test data
-y_pred = xgb_clf.predict(X_test)
-
-# check accuracy score
-from sklearn.metrics import accuracy_score
-
-print('XGBoost model accuracy score: {0:0.4f}'. format(accuracy_score(y_test, y_pred)))
+# Evaluate the model's performance
+print('XGBoost model accuracy score: {0:0.4f}'.format(accuracy_score(y_test, y_pred)))
+print(classification_report(y_test, y_pred))
