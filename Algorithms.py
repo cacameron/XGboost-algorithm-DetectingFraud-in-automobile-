@@ -2,77 +2,151 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
+warnings.filterwarnings("ignore")
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
+from sklearn.metrics import (
+    accuracy_score,
+    roc_auc_score,
+    precision_recall_fscore_support,
+    confusion_matrix,
+    classification_report,
+    roc_curve,
+    precision_recall_curve,
+)
 from xgboost import XGBClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
-from sklearn.metrics import accuracy_score, classification_report
 
-warnings.filterwarnings('ignore')
+# CONFIG
+DATA_PATH = "/Users/caitlyncameron/Downloads/Algorithms/DataAlgorithm.csv"
+TARGET_COL = "FraudFound_P"
+YEAR_COL = "Year"
+FILTER_YEARS = [1994, 1995, 1996]
+USE_SMOTE = True
+RANDOM_STATE = 42
 
-# Import dataset
-data = '/Users/caitlyncameron/Downloads/Algorithms/DataAlgorithm.csv'
-df = pd.read_csv(data)
+def load_data(path):
+    return pd.read_csv(path)
 
-# Check the shape and first few rows
-print(df.shape)
-print(df.head())
+def basic_cleaning(df):
+    # Filter by year
+    if YEAR_COL in df.columns:
+        df = df[df[YEAR_COL].isin(FILTER_YEARS)]
+        print(f"\n➡️ Filtered to years {FILTER_YEARS}. New shape: {df.shape}")
 
-# Convert 'BasePolicy' to numeric if it's categorical
-if df['BasePolicy'].dtype == 'object':
-    df['BasePolicy'] = pd.factorize(df['BasePolicy'])[0]  # Convert categorical to numeric
+    # Fill numeric / categorical missing values
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = df.select_dtypes(include=["object"]).columns.tolist()
 
-# Replace 'no change' with 0 and any other value with 1 in the 'AddressChange_Claim' column
-df['AddressChange_Claim'] = df['AddressChange_Claim'].map(lambda x: 0 if x == 'no change' else 1)
+    if TARGET_COL in num_cols: num_cols.remove(TARGET_COL)
+    if TARGET_COL in cat_cols: cat_cols.remove(TARGET_COL)
 
-# Define X and y
-X = df.drop('BasePolicy', axis=1)  
-y = df['BasePolicy']
+    for c in num_cols:
+        df[c] = df[c].fillna(df[c].median())
 
-# Convert labels into binary values
-y[y == 2] = 0  
-y[y == 1] = 1  
+    for c in cat_cols:
+        df[c] = df[c].fillna(df[c].mode()[0])
 
-# Preview the y labels
-print(y.head())
+    # Map “AddressChange_Claim”
+    if "AddressChange_Claim" in df.columns:
+        df["AddressChange_Claim"] = df["AddressChange_Claim"].astype(str).map(
+            lambda x: 0 if "no change" in x.lower() else 1
+        )
 
-# Convert all X columns to numeric (if necessary)
-X = X.apply(pd.to_numeric, errors='coerce')
+    # Ensure binary target
+    df[TARGET_COL] = df[TARGET_COL].map(lambda x: 1 if int(x) == 1 else 0)
 
-# Split X and y into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
+    return df
 
-# Define the parameter grid to search for hyperparameters
-param_grid = {
-    'learning_rate': [0.01, 0.05, 0.1],
-    'max_depth': [3, 4, 5],
-    'n_estimators': [100, 200],
-    'subsample': [0.8, 0.9, 1.0],
-    'colsample_bytree': [0.8, 0.9, 1.0],
-    'min_child_weight': [1, 5, 10],
-}
+def prepare_features(df):
+    X = df.drop(columns=[TARGET_COL])
+    y = df[TARGET_COL]
 
-# Initialize the XGBoost model
-xgb_clf = XGBClassifier(objective='binary:logistic', scale_pos_weight=1)
+    # Factorize categorical
+    cat_cols = X.select_dtypes(include=["object"]).columns
+    for c in cat_cols:
+        X[c] = pd.factorize(X[c])[0]
 
-# Set up k-fold cross-validation (StratifiedKFold ensures the class distribution is preserved)
-kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # Make numeric
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
+    return X, y
 
-# Set up GridSearchCV with k-fold cross-validation
-grid_search = GridSearchCV(estimator=xgb_clf, param_grid=param_grid, cv=kfold, 
-                           scoring='accuracy', n_jobs=-1, verbose=1)
+def handle_imbalance_with_smote(X_train, y_train):
+    try:
+        from imblearn.over_sampling import SMOTE
+        print("\n➡️ Using SMOTE for oversampling (class imbalance fix)")
+        sm = SMOTE(random_state=RANDOM_STATE)
+        return sm.fit_resample(X_train, y_train), True
+    except:
+        print("\n⚠️ SMOTE not available — using scale_pos_weight instead")
+        return (X_train, y_train), False
 
-# Perform grid search with cross-validation
-grid_search.fit(X_train, y_train)
+def train_and_tune(X_train, y_train, scale_pos_weight):
+    model = XGBClassifier(
+        objective="binary:logistic",
+        eval_metric="logloss",
+        random_state=RANDOM_STATE,
+        scale_pos_weight=scale_pos_weight,
+    )
 
-# Print the best parameters and best score from the grid search
-print(f"Best parameters found: {grid_search.best_params_}")
-print(f"Best cross-validation accuracy score: {grid_search.best_score_}")
+    param_grid = {
+        "learning_rate": [0.05, 0.1],
+        "max_depth": [3, 5],
+        "n_estimators": [100, 200],
+        "subsample": [0.8, 1.0],
+        "colsample_bytree": [0.8, 1.0],
+    }
 
-# Retrieve the best model from grid search
-best_model = grid_search.best_estimator_
+    cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=RANDOM_STATE)
+    gs = GridSearchCV(model, param_grid, scoring="roc_auc", cv=cv, n_jobs=-1, verbose=1)
+    gs.fit(X_train, y_train)
 
-# Make predictions with the best model on the test set
-y_pred = best_model.predict(X_test)
+    print("\n🎯 Best Parameters:", gs.best_params_)
+    print("📈 Best CV ROC-AUC:", gs.best_score_)
 
-# Evaluate the model's performance
-print('XGBoost model accuracy score: {0:0.4f}'.format(accuracy_score(y_test, y_pred)))
-print(classification_report(y_test, y_pred))
+    return gs.best_estimator_
+
+def evaluate(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
+
+    print("\n==================== MODEL PERFORMANCE ====================")
+    print("Accuracy:", accuracy_score(y_test, y_pred))
+    print("ROC-AUC:", roc_auc_score(y_test, y_proba))
+    print("\nClassification Report:\n", classification_report(y_test, y_pred))
+
+    print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
+
+def main():
+    df = load_data(DATA_PATH)
+    print("Loaded data shape:", df.shape)
+
+    df = basic_cleaning(df)
+    X, y = prepare_features(df)
+
+    print("\nClass distribution:", y.value_counts().to_dict())
+
+    # Train/test split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, stratify=y, random_state=RANDOM_STATE
+    )
+
+    # Handle imbalance
+    (X_train, y_train), used_smote = handle_imbalance_with_smote(X_train, y_train)
+
+    # If SMOTE not used → compute scale_pos_weight
+    if not used_smote:
+        neg, pos = (y_train == 0).sum(), (y_train == 1).sum()
+        scale_pos_weight = neg / pos
+    else:
+        scale_pos_weight = 1
+
+    print(f"\n➡️ scale_pos_weight used: {scale_pos_weight}")
+
+    # Train
+    best_model = train_and_tune(X_train, y_train, scale_pos_weight)
+
+    # Evaluate
+    evaluate(best_model, X_test, y_test)
+
+if __name__ == "__main__":
+    main()
