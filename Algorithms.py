@@ -82,7 +82,7 @@ def basic_cleaning(df):
 
         print("Added Days_Policy_Accident, Days_Policy_Claim, DelayPolicyToAccident.")
 
-    # EXTRA FRAUD FEATURES -------------------------------------
+    # EXTRA FRAUD FEATURES 
 
     if {"TotalClaimAmount", "InsuredIncome"}.issubset(df.columns):
         df["ClaimAmountToIncomeRatio"] = df["TotalClaimAmount"] / (df["InsuredIncome"] + 1)
@@ -158,7 +158,6 @@ def train_and_tune(X_train, y_train, scale_pos_weight):
 
     cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=RANDOM_STATE)
     
-    # ⬇ ROC-AUC removed. Now using F1.
     gs = GridSearchCV(model, param_grid, scoring="f1", cv=cv, n_jobs=-1, verbose=1)
     gs.fit(X_train, y_train)
 
